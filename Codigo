@@ -1,0 +1,110 @@
+#include <Wire.h>
+#include <Adafruit_GFX.h>
+#include <Adafruit_SSD1306.h>
+#include <Adafruit_ADS1X15.h>
+
+// --- PINES Y CONFIGURACIÓN ---
+#define PIN_BOTON 4
+#define PIN_NEBULIZADOR 5
+#define ANCHO_PANTALLA 128
+#define ALTO_PANTALLA 64
+
+Adafruit_SSD1306 display(ANCHO_PANTALLA, ALTO_PANTALLA, &Wire, -1);
+Adafruit_ADS1115 ads;
+
+// --- VARIABLES TÉCNICAS ---
+float corrienteVacio = 0.0;
+const float FACTOR_CALIBRACION = 20.0; 
+const float MARGEN_TRABAJO = 0.15;     // ACTUALIZADO: Mayor sensibilidad
+
+void setup() {
+  Serial.begin(115200);
+  pinMode(PIN_BOTON, INPUT_PULLUP);
+  pinMode(PIN_NEBULIZADOR, OUTPUT);
+
+  if(!display.begin(SSD1306_SWITCHCAPVCC, 0x3C)) { 
+    Serial.println(F("OLED no encontrado")); 
+    for(;;); 
+  }
+  
+  if (!ads.begin(0x48)) { 
+    Serial.println(F("ADS1115 no encontrado")); 
+    while (1); 
+  }
+  
+  ads.setGain(GAIN_SIXTEEN); 
+
+  // Primera captura rápida al encender
+  taraInstantanea();
+}
+
+void loop() {
+  // 1. TARA INSTANTÁNEA: Captura el valor actual sin esperar 10 segundos
+  if (digitalRead(PIN_BOTON) == LOW) {
+    taraInstantanea();
+    delay(300); // Antirrebote
+  }
+
+  // 2. Medición de corriente
+  float corrienteActual = obtenerCorrienteRMS(150);
+  bool estaPerforando = (corrienteActual > (corrienteVacio + MARGEN_TRABAJO));
+
+  // 3. Actuador (Nebulizador)
+  digitalWrite(PIN_NEBULIZADOR, estaPerforando ? HIGH : LOW);
+
+  // 4. Actualizar Pantalla OLED
+  display.clearDisplay();
+  
+  // --- ZONA AMARILLA (Encabezado actualizado) ---
+  display.setTextColor(SSD1306_WHITE);
+  display.setTextSize(1);
+  display.setCursor(15, 0);
+  display.println("RETROFITTING AUTO"); // Título correcto del proyecto
+  display.drawLine(0, 14, 128, 14, SSD1306_WHITE);
+
+  // --- ZONA AZUL (Datos) ---
+  display.setCursor(0, 18);
+  display.print("Ref: "); display.print(corrienteVacio, 3); display.print(" A");
+  
+  display.setTextSize(2);
+  display.setCursor(10, 32);
+  display.print(corrienteActual, 3); display.print(" A");
+
+  display.setTextSize(1);
+  display.setCursor(0, 54);
+  if(estaPerforando) {
+    display.fillRect(0, 52, 128, 12, SSD1306_WHITE);
+    display.setTextColor(SSD1306_BLACK);
+    display.print("  >>> TRABAJANDO <<< ");
+  } else {
+    display.setTextColor(SSD1306_WHITE);
+    display.print("  STATUS: STANDBY   ");
+  }
+
+  display.display();
+  delay(10); 
+}
+
+// Función de captura inmediata
+void taraInstantanea() {
+  display.clearDisplay();
+  display.setTextSize(1);
+  display.setTextColor(SSD1306_WHITE);
+  display.setCursor(15, 25);
+  display.println("AJUSTANDO CERO...");
+  display.display();
+  
+  corrienteVacio = obtenerCorrienteRMS(200);
+  Serial.print(F("Nueva referencia: ")); Serial.println(corrienteVacio, 3);
+}
+
+float obtenerCorrienteRMS(int muestras) {
+  float sumaCuadrados = 0;
+  for (int i = 0; i < muestras; i++) {
+    int16_t rawADC = ads.readADC_Differential_0_1();
+    float voltaje = ads.computeVolts(rawADC);
+    float corriente = voltaje * FACTOR_CALIBRACION;
+    sumaCuadrados += (corriente * corriente);
+  }
+  return sqrt(sumaCuadrados / muestras);
+}
